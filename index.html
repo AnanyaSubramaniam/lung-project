@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Lung Visualization</title>
+
+  <!-- This loads p5.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+
+  <style>
+    body {
+      margin: 0;
+      background: #0d0d0d;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+    }
+  </style>
+</head>
+
+<body>
+
+<script>
+// ============================================================
+// LUNG FUNCTION DECLINE VISUALIZATION — p5.js
+// Data source: Basak & Majee (2025), IJOSH
+// Tables 3, 4, 8 — FEV1, FEV1/FVC, respiratory abnormalities
+// ============================================================
+// HOW TO USE ON P5JS.ORG:
+// 1. Go to https://editor.p5js.org/
+// 2. Delete everything in sketch.js
+// 3. Paste this entire file
+// 4. Press Play
+// ============================================================
+
+// ---- REAL DATA FROM PAPER ----
+// Control baseline FEV1 avg = 2.68 L (Table 3)
+// Control FVC avg = 3.15 L (Table 3)
+// Worker FEV1 by exposure bracket (Table 4):
+//   1–10 yrs  → 2.40 L  (76% of control)
+//   11–20 yrs → 2.25 L  (71% of control)
+//   >20 yrs   → 1.99 L  (63% of control)
+// Worker FEV1/FVC by bracket (Table 4):
+//   1–10 yrs  → 89.45%
+//   11–20 yrs → 86.31%
+//   >20 yrs   → 81.13%
+// Respiratory abnormality (Table 8):
+//   Workers   → 54.6% abnormal
+//   Controls  → 6.0%  abnormal
+
+const CONTROL_FEV1 = 2.68;
+const CONTROL_FVC  = 3.15;
+const TOTAL_PARTICLES = 300;
+
+// 4 steps: baseline, 1-10yrs, 11-20yrs, >20yrs
+const DATA = [
+  {
+    label:       '0',
+    yDisplay:    '0',
+    workerFEV1:  2.40,
+    workerFVC:   2.76,
+    workerRatio: 89.45,
+    workerPct:   Math.round((2.40 / CONTROL_FEV1) * 100), // 76%
+    controlPct:  100,
+    message:     ''
+  },
+  {
+    label:       '1\u201310',
+    yDisplay:    '1\u201310',
+    workerFEV1:  2.40,
+    workerFVC:   2.76,
+    workerRatio: 89.45,
+    workerPct:   Math.round((2.40 / CONTROL_FEV1) * 100), // 76%
+    controlPct:  100,
+    message:     'Even at 1\u201310 yrs: workers already at 76% of control lung capacity. 54.6% have abnormal lungs vs 6% in controls (Table 8).'
+  },
+  {
+    label:       '11\u201320',
+    yDisplay:    '11\u201320',
+    workerFEV1:  2.25,
+    workerFVC:   2.74,
+    workerRatio: 86.31,
+    workerPct:   Math.round((2.25 / CONTROL_FEV1) * 100), // 71%
+    controlPct:  97,
+    message:     'At 11\u201320 yrs: FEV1/FVC falls to 86.3%. Workers\u2019 OR for chronic bronchitis is 6.5\u00D7 higher than the <10 yr group (Table 6).'
+  },
+  {
+    label:       '>20',
+    yDisplay:    '>20',
+    workerFEV1:  1.99,
+    workerFVC:   2.49,
+    workerRatio: 81.13,
+    workerPct:   Math.round((1.99 / CONTROL_FEV1) * 100), // 63%
+    controlPct:  94,
+    message:     'At >20 yrs: FEV1 has fallen to 1.99 L \u2014 a 17% drop within the worker group alone. 43.4% of workers show restrictive lung disease (Table 8).'
+  }
+];
+
+// ---- GLOBALS ----
+let leftParticles  = [];
+let rightParticles = [];
+let currentStep    = 0;
+let scrollAcc      = 0;
+let canvasW, canvasH;
+let CX;
+
+// Lung geometry (relative to canvas center)
+let LEFT_LUNG, RIGHT_LUNG;
+
+// ---- SETUP ----
+function setup() {
+  canvasW = min(windowWidth, 680);
+  canvasH = 560;
+  let cnv = createCanvas(canvasW, canvasH);
+  cnv.parent(document.body);
+
+  // Scale lung positions relative to canvas width
+  let scale = canvasW / 680;
+  CX = canvasW / 2;
+
+  LEFT_LUNG = {
+    cx: CX - 118 * scale,
+    cy: 200 * scale,
+    rx: 88  * scale,
+    ry: 148 * scale,
+    tilt: 0.09
+  };
+  RIGHT_LUNG = {
+    cx: CX + 118 * scale,
+    cy: 200 * scale,
+    rx: 88  * scale,
+    ry: 148 * scale,
+    tilt: -0.09
+  };
+
+  // Seed particles into each lung
+  leftParticles  = seedParticles(LEFT_LUNG);
+  rightParticles = seedParticles(RIGHT_LUNG);
+
+  // Dark background
+  background(13, 13, 13);
+
+  // Mouse wheel scrolling
+  let cnvEl = document.querySelector('canvas');
+  cnvEl.addEventListener('wheel', function(e) {
+    e.preventDefault();
+    scrollAcc += e.deltaY * 0.012;
+    currentStep = constrain(Math.round(scrollAcc), 0, 3);
+  }, { passive: false });
+
+  // Touch support
+  let touchStartY = null;
+  cnvEl.addEventListener('touchstart', function(e) {
+    touchStartY = e.touches[0].clientY;
+  });
+  cnvEl.addEventListener('touchmove', function(e) {
+    if (touchStartY === null) return;
+    let dy = touchStartY - e.touches[0].clientY;
+    touchStartY = e.touches[0].clientY;
+    scrollAcc += dy * 0.015;
+    currentStep = constrain(Math.round(scrollAcc), 0, 3);
+  });
+
+  textFont('sans-serif');
+  noLoop();
+}
+
+// ---- SEED PARTICLES INSIDE LUNG ELLIPSE ----
+function seedParticles(L) {
+  let pts = [];
+  let tries = 0;
+  while (pts.length < TOTAL_PARTICLES && tries < TOTAL_PARTICLES * 40) {
+    tries++;
+    let x = L.cx + (random() * 2 - 1) * L.rx * 1.05;
+    let y = L.cy + (random() * 2 - 1) * L.ry * 1.05;
+    if (isInLung(x, y, L)) {
+      let angle = atan2(y - L.cy, x - L.cx);
+      let spd   = random(1.6, 5.0);
+      pts.push({
+        ox:    x,
+        oy:    y,
+        vx:    cos(angle) * spd + random(-0.9, 0.9),
+        vy:    sin(angle) * spd + random(-0.9, 0.9),
+        r:     random(2.0, 3.9),
+        alpha: random(0.50, 1.0),
+        hue:   random(344, 362)
+      });
+    }
+  }
+  return pts;
+}
+
+// ---- CHECK IF POINT IS INSIDE ROTATED ELLIPSE ----
+function isInLung(x, y, L) {
+  let dx = x - L.cx;
+  let dy = y - L.cy;
+  let rx2 = (dx * cos(L.tilt) + dy * sin(L.tilt)) / L.rx;
+  let ry2 = (-dx * sin(L.tilt) + dy * cos(L.tilt)) / L.ry;
+  return (rx2 * rx2 + ry2 * ry2) <= 0.93;
+}
+
+// ---- MAIN DRAW LOOP ----
+function draw() {
+  background(13, 13, 13);
+
+  let d = DATA[currentStep];
+  let leftRatio  = d.controlPct / 100.0;
+  let rightRatio = d.workerPct  / 100.0;
+
+  drawTrachea(0.5 + leftRatio * 0.35);
+  drawLungOutline(LEFT_LUNG,  0.15 + leftRatio  * 0.25);
+  drawLungOutline(RIGHT_LUNG, 0.15 + rightRatio * 0.25);
+  drawYAxisTicks(currentStep);
+  renderParticles(leftParticles,  leftRatio,  LEFT_LUNG);
+  renderParticles(rightParticles, rightRatio, RIGHT_LUNG);
+  drawLungLabels(d);
+  drawTopUI(d);
+  drawStatsRow(d);
+  drawMessage(d);
+  drawHint();
+}
+
+// ---- DRAW PARTICLES WITH SCATTER ----
+function renderParticles(pts, ratio, lung) {
+  let keep    = round(ratio * TOTAL_PARTICLES);
+  let scatter = max(0, 1 - ratio);
+  let ease    = scatter * scatter;
+
+  for (let i = 0; i < pts.length; i++) {
+    if (i >= keep) continue;
+    let p    = pts[i];
+    let fade = i > keep - 18 ? max(0, (keep - i) / 18.0) : 1.0;
+    let pa   = p.alpha * fade * (1 - ease * 0.45);
+    let px   = p.ox + p.vx * ease * 58;
+    let py   = p.oy + p.vy * ease * 58;
+    let pr   = max(0.4, p.r * (1 - ease * 0.28));
+
+    // Hue shifts slightly warmer as scatter increases (damage visual)
+    let lightness = 40 + ease * 16;
+    let col = color('hsl(' + nf(p.hue % 360, 1, 0) + ',76%,' + nf(lightness, 1, 0) + '%)');
+
+    noStroke();
+    fill(red(col), green(col), blue(col), pa * 255);
+    ellipse(px, py, pr * 2, pr * 2);
+  }
+}
+
+// ---- DRAW DASHED LUNG OUTLINE ----
+function drawLungOutline(L, op) {
+  push();
+  noFill();
+  stroke(46, 46, 46, op * 255);
+  strokeWeight(1);
+  drawingContext.setLineDash([3, 4]);
+  push();
+  translate(L.cx, L.cy);
+  rotate(L.tilt);
+  ellipse(0, 0, L.rx * 2, L.ry * 2);
+  pop();
+  drawingContext.setLineDash([]);
+  pop();
+}
+
+// ---- DRAW TRACHEA / BRONCHI ----
+function drawTrachea(op) {
+  push();
+  noFill();
+  stroke(37, 37, 37, op * 255);
+  strokeWeight(6);
+  strokeCap(ROUND);
+
+  // Main trachea stem
+  beginShape();
+  vertex(CX, 50);
+  vertex(CX, 88);
+  endShape();
+
+  // Left bronchus
+  beginShape();
+  vertex(CX, 88);
+  bezierVertex(CX - 18, 110, CX - 76, 102, LEFT_LUNG.cx, 94);
+  endShape();
+
+  // Right bronchus
+  beginShape();
+  vertex(CX, 88);
+  bezierVertex(CX + 18, 110, CX + 76, 102, RIGHT_LUNG.cx, 94);
+  endShape();
+
+  pop();
+}
+
+// ---- DRAW Y-AXIS EXPOSURE BRACKETS ----
+function drawYAxisTicks(step) {
+  let labels = ['0', '1\u201310', '11\u201320', '>20'];
+  push();
+  textAlign(CENTER, CENTER);
+  textSize(10);
+  noStroke();
+  for (let i = 0; i < labels.length; i++) {
+    let yp = 390 - (i / 3.0) * 310;
+    fill(i === step ? color(224, 85, 85) : color(42, 42, 42));
+    text(labels[i], CX, yp);
+  }
+  pop();
+}
+
+// ---- DRAW LUNG LABELS (bottom of lungs) ----
+function drawLungLabels(d) {
+  push();
+  textAlign(CENTER, TOP);
+  noStroke();
+
+  // Left lung label
+  textSize(11);
+  fill(74, 74, 74);
+  text('OTHERS', LEFT_LUNG.cx, LEFT_LUNG.cy + LEFT_LUNG.ry + 18);
+
+  textSize(11);
+  fill(42, 42, 42);
+  text('FVC ~' + nf(CONTROL_FVC, 1, 2) + ' L (control avg)', LEFT_LUNG.cx, LEFT_LUNG.cy + LEFT_LUNG.ry + 34);
+
+  // Right lung label
+  textSize(11);
+  fill(224, 85, 85);
+  text('PETROL PUMP WORKERS', RIGHT_LUNG.cx, RIGHT_LUNG.cy + RIGHT_LUNG.ry + 18);
+
+  textSize(11);
+  fill(160, 48, 48);
+  text('FEV1 ' + nf(d.workerFEV1, 1, 2) + ' L  |  FEV1/FVC ' + nf(d.workerRatio, 1, 1) + '%', RIGHT_LUNG.cx, RIGHT_LUNG.cy + RIGHT_LUNG.ry + 34);
+
+  // Y axis label
+  textAlign(RIGHT, BOTTOM);
+  textSize(10);
+  fill(42, 42, 42);
+  text('y-axis: years of exposure', CX + 60, canvasH - 80);
+
+  pop();
+}
+
+// ---- DRAW TOP TITLE + YEAR DISPLAY ----
+function drawTopUI(d) {
+  push();
+  textAlign(CENTER, TOP);
+  noStroke();
+
+  // Title
+  textSize(14);
+  fill(210, 210, 210);
+  text('Lung function decline \u2014 Basak & Majee (2025)', CX, 12);
+
+  // Subtitle
+  textSize(10);
+  fill(80, 80, 80);
+  text('Particle density = FEV1 as % of healthy control avg (2.68 L). Scroll or drag slider.', CX, 30);
+
+  // Year readout label
+  textSize(11);
+  fill(130, 130, 130);
+  text('Years of exposure', CX, 46);
+
+  // Big year number
+  textSize(26);
+  fill(224, 85, 85);
+  text(d.yDisplay, CX, 58);
+
+  pop();
+}
+
+// ---- DRAW STATS ROW AT BOTTOM ----
+function drawStatsRow(d) {
+  let stats = [
+    { label: 'Others \u2014 FVC avg',         value: nf(CONTROL_FVC, 1, 2) + ' L',                 red: false },
+    { label: 'Workers \u2014 FEV1',            value: nf(d.workerFEV1, 1, 2) + ' L',                red: true  },
+    { label: 'Workers \u2014 FEV1/FVC',        value: nf(d.workerRatio, 1, 1) + '%',                 red: true  },
+    { label: 'Lung capacity vs control',       value: d.workerPct + '% of control',                  red: false }
+  ];
+
+  let cardW   = 148;
+  let cardH   = 46;
+  let gap     = 10;
+  let totalW  = stats.length * cardW + (stats.length - 1) * gap;
+  let startX  = CX - totalW / 2;
+  let cardY   = canvasH - 130;
+
+  push();
+  for (let i = 0; i < stats.length; i++) {
+    let x = startX + i * (cardW + gap);
+
+    // Card background
+    fill(22, 22, 22);
+    stroke(39, 39, 39);
+    strokeWeight(0.5);
+    rect(x, cardY, cardW, cardH, 8);
+
+    // Label
+    noStroke();
+    textAlign(CENTER, TOP);
+    textSize(9);
+    fill(80, 80, 80);
+    text(stats[i].label.toUpperCase(), x + cardW / 2, cardY + 6);
+
+    // Value
+    textSize(14);
+    fill(stats[i].red ? color(224, 85, 85) : color(160, 160, 160));
+    text(stats[i].value, x + cardW / 2, cardY + 22);
+  }
+  pop();
+}
+
+// ---- DRAW MESSAGE ----
+function drawMessage(d) {
+  if (!d.message || d.message === '') return;
+  push();
+  textAlign(CENTER, TOP);
+  textSize(11);
+  fill(224, 85, 85);
+  noStroke();
+  // Word wrap manually
+  let words  = d.message.split(' ');
+  let line   = '';
+  let lineY  = canvasH - 78;
+  let maxW   = canvasW - 80;
+  for (let w of words) {
+    let test = line + (line ? ' ' : '') + w;
+    if (textWidth(test) > maxW && line !== '') {
+      text(line, CX, lineY);
+      lineY += 14;
+      line = w;
+    } else {
+      line = test;
+    }
+  }
+  if (line) text(line, CX, lineY);
+  pop();
+}
+
+// ---- DRAW HINT ----
+function drawHint() {
+  push();
+  textAlign(CENTER, BOTTOM);
+  textSize(10);
+  fill(55, 55, 55);
+  noStroke();
+  text('drag slider through exposure brackets: 0  \u2192  1\u201310 yrs  \u2192  11\u201320 yrs  \u2192  >20 yrs', CX, canvasH - 8);
+  pop();
+}
+
+// ---- MOUSE WHEEL (p5 built-in fallback) ----
+function mouseWheel(event) {
+  scrollAcc   += event.delta * 0.012;
+  currentStep  = constrain(Math.round(scrollAcc), 0, 3);
+  redraw();
+  return false;
+}
+
+// ---- KEYBOARD ARROW KEY SUPPORT ----
+function keyPressed() {
+  if (keyCode === DOWN_ARROW || keyCode === RIGHT_ARROW) {
+    currentStep = constrain(currentStep + 1, 0, 3);
+    scrollAcc   = currentStep;
+  }
+  if (keyCode === UP_ARROW || keyCode === LEFT_ARROW) {
+    currentStep = constrain(currentStep - 1, 0, 3);
+    scrollAcc   = currentStep;
+  }
+  redraw();
+}
+
+// ---- SLIDER (HTML element injected below canvas) ----
+function windowResized() {
+  redraw();
+}
+
+// Inject slider + source note into DOM after canvas is created
+window.addEventListener('load', function() {
+  let sliderDiv = document.createElement('div');
+  sliderDiv.style.cssText = [
+    'background:#0d0d0d',
+    'display:flex',
+    'flex-direction:column',
+    'align-items:center',
+    'padding:0.5rem 1rem 1.5rem',
+    'font-family:sans-serif',
+    'width:' + min(window.innerWidth, 680) + 'px'
+  ].join(';');
+
+  let row = document.createElement('div');
+  row.style.cssText = 'display:flex;align-items:center;gap:10px;width:100%;max-width:480px;margin-top:8px;';
+
+  let lbl1 = document.createElement('span');
+  lbl1.style.cssText = 'font-size:11px;color:#555;white-space:nowrap;';
+  lbl1.textContent = '0 yrs';
+
+  let sl = document.createElement('input');
+  sl.type = 'range'; sl.min = 0; sl.max = 3; sl.step = 1; sl.value = 0;
+  sl.style.cssText = 'flex:1;accent-color:#e05555;';
+  sl.addEventListener('input', function() {
+    currentStep = parseInt(sl.value);
+    scrollAcc   = currentStep;
+    redraw();
+  });
+
+  let lbl2 = document.createElement('span');
+  lbl2.style.cssText = 'font-size:11px;color:#555;white-space:nowrap;';
+  lbl2.textContent = '>20 yrs';
+
+  row.appendChild(lbl1);
+  row.appendChild(sl);
+  row.appendChild(lbl2);
+
+  let src = document.createElement('p');
+  src.style.cssText = 'font-size:10px;color:#2a2a2a;text-align:center;margin-top:6px;';
+  src.textContent = 'Data: Table 3 & Table 4, Basak & Majee (2025), Indonesian Journal of Occupational Safety and Health';
+
+  sliderDiv.appendChild(row);
+  sliderDiv.appendChild(src);
+  document.body.appendChild(sliderDiv);
+
+  // Style the body to match dark bg
+  document.body.style.background = '#0d0d0d';
+  document.body.style.margin = '0';
+  document.body.style.display = 'flex';
+  document.body.style.flexDirection = 'column';
+  document.body.style.alignItems = 'center';
+
+  redraw();
+});
+</script>
+
+</body>
+</html>
